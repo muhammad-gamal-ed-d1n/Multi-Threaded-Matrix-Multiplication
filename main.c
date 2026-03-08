@@ -10,6 +10,8 @@ int *get_dim(FILE *file);
 int **get_matrix(FILE *file, int row, int col);
 void *multiply_row(void *args);
 void *multiply_element(void *args);
+void write_matrix(FILE *file, int **mat, int rows, int cols, char* name, char *postfix);
+void free_matrix(int **mat, int rows);
 
 typedef struct args {
     int** a;
@@ -18,32 +20,78 @@ typedef struct args {
     int row;
     int col;
     int cols;
+    int rows;
 } args;
 
-void main() {
-    FILE *file = fopen("input/a.txt", "r");
-    char line[MAX_LINE];
+void main(int argc, char *argv[]) {
+    FILE *file;
+    char mat_a[MAX_LINE];
+    char mat_b[MAX_LINE];
+    char output[MAX_LINE];
 
+
+    if (!argv[1] || !argv[2] || !argv[3]) {
+        snprintf(mat_a, sizeof(char) * MAX_LINE, "a.txt");    
+        snprintf(mat_b, sizeof(char) * MAX_LINE, "b.txt");    
+        snprintf(output, sizeof(char) * MAX_LINE, "c");    
+    }
+    else {
+        snprintf(mat_a, sizeof(char) * MAX_LINE, "%s.txt", argv[1]);    
+        snprintf(mat_b, sizeof(char) * MAX_LINE, "%s.txt", argv[2]);    
+        snprintf(output, sizeof(char) * MAX_LINE, "%s", argv[3]);    
+    }
+
+    file = fopen(mat_a, "r");
     if (!file) {
-        printf("input file doesn't exist\n");
+        printf("Error loading file '%s'\n", mat_a);
         return;
     }
 
     int *dim = get_dim(file);
-
-    // printf("row: %d\ncolumn: %d\n", dim[0], dim[1]);
+    
+    if (!dim) {
+        printf("Error parsing first matrix' dimensions");
+        return;
+    }
 
     int **a = get_matrix(file, dim[0], dim[1]);
-    //should free dim if mat returns null
-
     fclose(file);
-    file = fopen("input/b.txt", "r");
+    //should free dim if mat returns null
+    if (a == NULL) {
+        printf("Error loading first input matrix\n");
+        free_matrix(a, dim[0]);
+        free(dim);
+    }
+    
+
+    file = fopen(mat_b, "r");
+    if (!file) {
+        printf("Error loading file '%s'\n", mat_b);
+        free_matrix(a, dim[0]);
+        free(dim);
+        return;
+    }
 
     int * dim2 = get_dim(file);
+
+    if (!dim2) {
+        printf("Error parsing second matrix' dimensions");
+        return;
+    }
+    
+    //-------------------------------
     int **b = get_matrix(file, dim2[0], dim2[1]);
+    fclose(file);
+    if (b == NULL) {
+        perror("Error loading second input file");
+        free_matrix(a, dim[0]);
+        free_matrix(b, dim2[0]);
+        free(dim);
+        free(dim2);
+    }
+
     int **result = malloc(sizeof(int*)*dim[0]);
     
-    //allocate matrix
     for (int i = 0; i < dim[0]; i++) {
         result[i] = malloc(sizeof(int) * dim2[1]);
     }
@@ -54,14 +102,23 @@ void main() {
         struct args *data = malloc(sizeof(struct args));
         data->a = a;
         data->b = b;
-        data->col = dim[1];
+        data->cols = dim2[1];
+        data->rows = dim2[0];
         data->row = i;
         data->result = result;
         pthread_create(&threads[i], 0, multiply_row, (void *)data);
     }
+    
+    for (int i = 0; i < dim[0]; i++) {
+        pthread_join(threads[i], 0);
+    }
+    free(threads);
+    write_matrix(file, result, dim[0], dim2[1], output, "_per_row");
+    
 
     //THREAD PER ELEMENT
     threads = malloc(sizeof(pthread_t) * dim[0] * dim2[1]);
+    int t = 0;
     for (int i = 0; i < dim[0]; i++) {
         for (int j = 0; j < dim2[1]; j++) {
             struct args *data = malloc(sizeof(struct args));
@@ -72,13 +129,16 @@ void main() {
             data->cols = dim[1];
             data->result = result;
             
-            pthread_create(&threads[i], 0, multiply_element, (void *)data);
+            pthread_create(&threads[t], 0, multiply_element, (void *)data);
+            t++;
         }
     }
 
     for (int i = 0; i < dim[0] * dim2[1]; i++) {
         pthread_join(threads[i], 0);
     }
+    free(threads);
+    write_matrix(file, result, dim[0], dim2[1], output, "_per_element");
 
     printf("mat a:\n");
     for (int i = 0; i < dim[0]; i++) {
@@ -104,9 +164,39 @@ void main() {
         printf("\n");
     }
 
+    free_matrix(result, dim[0]);
+    free_matrix(a, dim[0]);
+    free_matrix(b, dim2[0]);
     free(dim);
-    free(a);
-    free(b);
+    free(dim2);
+}
+
+void free_matrix(int **mat, int rows) {
+    for (int r = 0; r < rows; r++) {
+        free(mat[r]);
+    }
+    free(mat);
+}
+
+void write_matrix(FILE *file, int **mat, int rows, int cols, char* name, char *postfix) {
+    char buffer[MAX_LINE];
+    snprintf(buffer, sizeof(buffer), "%s%s.txt", name, postfix);
+
+    file = fopen(buffer, "w");
+    if (!file) {
+        perror("Error writing to file");
+        return;
+    }
+    fprintf(file, "rows=%d col=%d\n", rows, cols);
+    for (int r = 0; r < rows; r++) {
+        // printf("infinite\n");
+        for (int c = 0; c < cols; c++) {
+            fprintf(file, "%d", mat[r][c]);
+            if (c + 1 < cols) fprintf(file, " ");
+        }
+        if (r + 1 < rows) fprintf(file, "\n");
+    }
+    fclose(file);
 }
 
 void *multiply_element(void *args) {
@@ -117,14 +207,15 @@ void *multiply_element(void *args) {
     int row = data->row;
     int col = data->col;
     int cols = data->cols;
-
+    
     int sum = 0;
-    for (int c = 0; c < cols; c++) {
+    for (int c = 0; c < cols; c++) {        
         sum += a[row][c] * b[c][col];
     }
     result[row][col] = sum;
 
     free(args);
+    return NULL;
 }
 
 void *multiply_row(void *args) {
@@ -133,11 +224,12 @@ void *multiply_row(void *args) {
     int **b = data->b;
     int **result = data->result;
     int row = data->row;
-    int col = data->col;
+    int cols = data->cols;
+    int rows = data->rows;
 
-    for (int c = 0; c < col; c++) {
+    for (int c = 0; c < cols; c++) {
         int sum = 0;
-        for (int i = 0; i < col; i++) {
+        for (int i = 0; i < rows; i++) {
             sum += a[row][i] * b[i][c];
         }
         result[row][c] = sum;
@@ -146,7 +238,6 @@ void *multiply_row(void *args) {
     // 3 4  4 5 6 
 
     free(args);
-
     return NULL;
 }
 
@@ -168,6 +259,7 @@ int *get_dim(FILE *file) {
             if (start == end || d == 0) {
                 printf("Error: invalid matrix format\n");
                 free(dim);
+                return NULL;
             }
 
             start = end;
@@ -199,7 +291,8 @@ int **get_matrix(FILE *file, int row, int col) {
                     //handle error in column
                     printf("Error: missing column/s in matrix input");
                     //SHOULD IMPLEMENT METHOD WHICH FREES MATRIX BUT THIS IS FINE FOR NOW
-                    free(mat);
+                    //Done
+                    free_matrix(mat, row);
                     return NULL;
                 }
 
@@ -215,7 +308,8 @@ int **get_matrix(FILE *file, int row, int col) {
             //handle error in row
             printf("Error: missing row/s in matrix");
             //SHOULD IMPLEMENT METHOD WHICH FREES MATRIX BUT THIS IS FINE FOR NOW
-            free(mat);
+            //Done
+            free_matrix(mat, row);
             return NULL;
         }
     }
